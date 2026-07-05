@@ -381,7 +381,10 @@ function blankSpendForm(){
     type:'spend',
     date: todayStr(),
     paidBy: project ? (project.people.includes(state.currentPerson) ? state.currentPerson : project.people[0]) : null,
+    currency: 'GBP',
     amount: '',
+    foreignAmount: '',
+    rate: '',
     catMode: 1,
     cats: [{name:'', amount:''},{name:'', amount:''},{name:'', amount:''}],
     notes: '',
@@ -392,11 +395,26 @@ function blankSpendForm(){
 function setTab(t){ state.tab=t; state.drilldownCategory=null; state.form = blankSpendForm(); state.editingEntryId=null; state.errors={}; render(); }
 function setFormType(type){ state.form.type = type; state.errors={}; render(); }
 
+const CURRENCY_SYMBOLS = { GBP:'£', USD:'$', EUR:'€' };
+
+function effectiveAmount(f){
+  if(f.currency==='GBP') return parseFloat(f.amount);
+  const fa = parseFloat(f.foreignAmount);
+  const r = parseFloat(f.rate);
+  if(!fa || !r) return NaN;
+  return round2(fa*r);
+}
+
 function validateSpend(f, project){
   const errs = {};
-  const amt = parseFloat(f.amount);
+  const amt = effectiveAmount(f);
   if(!f.date) errs.date = 'Pick a date.';
-  if(!amt || amt<=0) errs.amount = 'Enter an amount greater than zero.';
+  if(f.currency==='GBP'){
+    if(!amt || amt<=0) errs.amount = 'Enter an amount greater than zero.';
+  } else {
+    if(!parseFloat(f.foreignAmount) || parseFloat(f.foreignAmount)<=0) errs.foreignAmount = 'Enter the amount you were charged in '+f.currency+'.';
+    if(!parseFloat(f.rate) || parseFloat(f.rate)<=0) errs.rate = 'Enter the exchange rate that applied at the time.';
+  }
   if(!f.paidBy) errs.paidBy = 'Choose who paid.';
   const activeCats = f.cats.slice(0,f.catMode).filter(c=>c.name);
   if(activeCats.length===0) errs.cats = 'Choose at least one category.';
@@ -407,13 +425,32 @@ function validateSpend(f, project){
   return errs;
 }
 
+async function fetchRate(){
+  const f = state.form;
+  if(f.currency==='GBP') return;
+  try{
+    const resp = await fetch(`https://api.frankfurter.app/${f.date}?from=${f.currency}&to=GBP`);
+    const data = await resp.json();
+    if(data && data.rates && data.rates.GBP){
+      state.form.rate = String(data.rates.GBP);
+      render();
+    }
+  }catch(err){ /* silent fail — user can enter the rate manually */ }
+}
+function setCurrency(cur){
+  state.form.currency = cur;
+  state.form.rate = '';
+  render();
+  if(cur!=='GBP') fetchRate();
+}
+
 async function submitSpend(){
   const project = currentProject();
   const f = state.form;
   const errs = validateSpend(f, project);
   state.errors = errs;
   if(Object.keys(errs).length){ render(); return; }
-  const amount = round2(parseFloat(f.amount));
+  const amount = round2(effectiveAmount(f));
   let cats;
   if(f.catMode===1){
     cats = [{name:f.cats[0].name, amount}];
@@ -424,6 +461,9 @@ async function submitSpend(){
     type:'spend',
     date: f.date,
     paidBy: f.paidBy,
+    currency: f.currency,
+    foreignAmount: f.currency==='GBP' ? null : round2(parseFloat(f.foreignAmount)),
+    rate: f.currency==='GBP' ? null : round2(parseFloat(f.rate)),
     amount,
     categories: cats,
     notes: f.notes||'',
@@ -486,7 +526,11 @@ function editEntry(id){
     const cats = e.categories.map(c=>({name:c.name, amount:String(c.amount)}));
     while(cats.length<3) cats.push({name:'',amount:''});
     state.form = {
-      type:'spend', date:e.date, paidBy:e.paidBy, amount:String(e.amount),
+      type:'spend', date:e.date, paidBy:e.paidBy,
+      currency: e.currency || 'GBP',
+      amount:String(e.amount),
+      foreignAmount: e.foreignAmount!=null ? String(e.foreignAmount) : '',
+      rate: e.rate!=null ? String(e.rate) : '',
       catMode: e.categories.length, cats, notes:e.notes
     };
   } else {
@@ -537,13 +581,16 @@ function exportCsv(){
   rows.push([]);
 
   rows.push(['TRANSACTION LOG']);
-  rows.push(['Date','Type','Person / From','To','Amount (GBP)','Categories','Notes']);
+  rows.push(['Date','Type','Person / From','To','Amount (GBP)','Original currency','Original amount','Rate used','Categories','Notes']);
   state.entries.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(e=>{
     if(e.type==='spend'){
       const catStr = e.categories.map(c=>c.name+':'+c.amount.toFixed(2)).join('; ');
-      rows.push([e.date,'Spend',e.paidBy,'',e.amount.toFixed(2),catStr, (e.notes||'').replace(/[\r\n]+/g,' ')]);
+      const origCur = e.currency && e.currency!=='GBP' ? e.currency : '';
+      const origAmt = e.currency && e.currency!=='GBP' ? e.foreignAmount.toFixed(2) : '';
+      const rateUsed = e.currency && e.currency!=='GBP' ? e.rate : '';
+      rows.push([e.date,'Spend',e.paidBy,'',e.amount.toFixed(2),origCur,origAmt,rateUsed,catStr, (e.notes||'').replace(/[\r\n]+/g,' ')]);
     } else {
-      rows.push([e.date,'Transfer',e.from,e.to,e.amount.toFixed(2),'', (e.notes||'').replace(/[\r\n]+/g,' ')]);
+      rows.push([e.date,'Transfer',e.from,e.to,e.amount.toFixed(2),'','','','', (e.notes||'').replace(/[\r\n]+/g,' ')]);
     }
   });
   rows.push([]);
@@ -743,13 +790,34 @@ function renderEntryTab(project){
 }
 
 function renderSpendForm(project, f){
+  const isGBP = f.currency==='GBP';
+  const computed = !isGBP ? effectiveAmount(f) : null;
   return `
     <div class="field-row">
       <div><label>Date</label><input type="date" id="f-date" value="${f.date}"></div>
-      <div><label>Amount (£)</label><input type="number" id="f-amount" step="0.01" min="0" placeholder="0.00" value="${esc(f.amount)}"></div>
+      <div><label>Currency</label>
+        <select id="f-currency">
+          <option value="GBP" ${f.currency==='GBP'?'selected':''}>£ GBP</option>
+          <option value="USD" ${f.currency==='USD'?'selected':''}>$ USD</option>
+          <option value="EUR" ${f.currency==='EUR'?'selected':''}>€ EUR</option>
+        </select>
+      </div>
     </div>
     ${state.errors.date?`<div class="error-box">${state.errors.date}</div>`:''}
-    ${state.errors.amount?`<div class="error-box">${state.errors.amount}</div>`:''}
+
+    ${isGBP ? `
+      <label>Amount (£)</label>
+      <input type="number" id="f-amount" step="0.01" min="0" placeholder="0.00" value="${esc(f.amount)}">
+      ${state.errors.amount?`<div class="error-box">${state.errors.amount}</div>`:''}
+    ` : `
+      <div class="field-row">
+        <div><label>Amount (${CURRENCY_SYMBOLS[f.currency]})</label><input type="number" id="f-foreign-amount" step="0.01" min="0" placeholder="0.00" value="${esc(f.foreignAmount)}"></div>
+        <div><label>Rate (1${CURRENCY_SYMBOLS[f.currency]} = £)</label><input type="number" id="f-rate" step="0.0001" min="0" placeholder="0.0000" value="${esc(f.rate)}"></div>
+      </div>
+      ${state.errors.foreignAmount?`<div class="error-box">${state.errors.foreignAmount}</div>`:''}
+      ${state.errors.rate?`<div class="error-box">${state.errors.rate}</div>`:''}
+      <div class="hint">Rate is looked up automatically for the date above, but check it against your card/receipt and adjust if needed.${computed>0?' Converts to <strong class="mono">'+money(computed)+'</strong>.':''}</div>
+    `}
 
     <label>Paid by</label>
     <div>${project.people.map(p=>`<span class="chip ${f.paidBy===p?'selected':''}" onclick="setSpendField('paidBy','${p}')">${p}</span>`).join('')}</div>
@@ -822,6 +890,7 @@ function renderEntryRow(e){
       </div>
       <div style="text-align:right;">
         <div class="entry-amount">${money(e.amount)}</div>
+        ${(isSpend && e.currency && e.currency!=='GBP') ? `<div class="hint" style="margin:2px 0 0;">${CURRENCY_SYMBOLS[e.currency]}${e.foreignAmount.toFixed(2)} @ ${e.rate}</div>` : ''}
         <div style="margin-top:6px;">
           <span class="link-btn" onclick="editEntry('${e.id}')">Edit</span>
           &nbsp;·&nbsp;
@@ -943,9 +1012,15 @@ function attachDynamicHandlers(){
   if(presetSel) presetSel.onchange = (e)=>{ state.form.preset = e.target.value; };
 
   const dateInput = document.getElementById('f-date');
-  if(dateInput) dateInput.onchange = (e)=>{ state.form.date = e.target.value; };
+  if(dateInput) dateInput.onchange = (e)=>{ state.form.date = e.target.value; if(state.form.currency!=='GBP'){ state.form.rate=''; fetchRate(); } };
+  const currencySel = document.getElementById('f-currency');
+  if(currencySel) currencySel.onchange = (e)=>{ setCurrency(e.target.value); };
   const amountInput = document.getElementById('f-amount');
   if(amountInput) amountInput.oninput = (e)=>{ state.form.amount = e.target.value; };
+  const foreignAmountInput = document.getElementById('f-foreign-amount');
+  if(foreignAmountInput) foreignAmountInput.oninput = (e)=>{ state.form.foreignAmount = e.target.value; };
+  const rateInput = document.getElementById('f-rate');
+  if(rateInput) rateInput.oninput = (e)=>{ state.form.rate = e.target.value; };
   const notesInput = document.getElementById('f-notes');
   if(notesInput) notesInput.oninput = (e)=>{ state.form.notes = e.target.value; };
 
@@ -984,6 +1059,7 @@ window.exportCsv = exportCsv;
 window.toggleNewProjectPerson = toggleNewProjectPerson;
 window.setSpendField = setSpendField;
 window.setCatMode = setCatMode;
+window.setCurrency = setCurrency;
 window.openDrilldown = openDrilldown;
 window.closeDrilldown = closeDrilldown;
 
