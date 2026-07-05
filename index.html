@@ -429,7 +429,7 @@ async function fetchRate(){
   const f = state.form;
   if(f.currency==='GBP') return;
   try{
-    const resp = await fetch(`https://api.frankfurter.app/${f.date}?from=${f.currency}&to=GBP`);
+    const resp = await fetch(`https://api.frankfurter.dev/v1/${f.date}?from=${f.currency}&to=GBP`);
     const data = await resp.json();
     if(data && data.rates && data.rates.GBP){
       state.form.rate = String(data.rates.GBP);
@@ -812,11 +812,11 @@ function renderSpendForm(project, f){
     ` : `
       <div class="field-row">
         <div><label>Amount (${CURRENCY_SYMBOLS[f.currency]})</label><input type="number" id="f-foreign-amount" step="0.01" min="0" placeholder="0.00" value="${esc(f.foreignAmount)}"></div>
-        <div><label>Rate (1${CURRENCY_SYMBOLS[f.currency]} = £)</label><input type="number" id="f-rate" step="0.0001" min="0" placeholder="0.0000" value="${esc(f.rate)}"></div>
+        <div><label>Rate (1${CURRENCY_SYMBOLS[f.currency]} = £) <span class="link-btn" style="text-transform:none; font-weight:600; float:right;" onclick="fetchRate()">look up</span></label><input type="number" id="f-rate" step="0.0001" min="0" placeholder="0.0000" value="${esc(f.rate)}"></div>
       </div>
       ${state.errors.foreignAmount?`<div class="error-box">${state.errors.foreignAmount}</div>`:''}
       ${state.errors.rate?`<div class="error-box">${state.errors.rate}</div>`:''}
-      <div class="hint">Rate is looked up automatically for the date above, but check it against your card/receipt and adjust if needed.${computed>0?' Converts to <strong class="mono">'+money(computed)+'</strong>.':''}</div>
+      <div class="hint">Rate is looked up automatically for the date above — tap "look up" to retry, or check it against your card/receipt and adjust if needed.${computed>0?' Converts to <strong class="mono">'+money(computed)+'</strong>.':''}</div>
     `}
 
     <label>Paid by</label>
@@ -1060,6 +1060,7 @@ window.toggleNewProjectPerson = toggleNewProjectPerson;
 window.setSpendField = setSpendField;
 window.setCatMode = setCatMode;
 window.setCurrency = setCurrency;
+window.fetchRate = fetchRate;
 window.openDrilldown = openDrilldown;
 window.closeDrilldown = closeDrilldown;
 
