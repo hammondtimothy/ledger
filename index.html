@@ -211,7 +211,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
-  getFirestore, collection, doc, addDoc, updateDoc, deleteDoc,
+  getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, getDocs,
   onSnapshot, query, orderBy, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
@@ -256,6 +256,10 @@ let state = {
   errors: {},
   drilldownCategory: null,
   confirmDelete: null,
+  showArchived: false,
+  projectMenuId: null,
+  projectMenuMode: null, // 'menu' | 'rename' | 'deleteConfirm'
+  renameValue: '',
 };
 if(state.currentPerson) state.screen = 'projectList';
 
@@ -292,7 +296,8 @@ function attachEntriesListener(projectId){
 
 /* ---------------- derived helpers ---------------- */
 function currentProject(){ return state.projects.find(p=>p.id===state.currentProjectId); }
-function visibleProjects(){ return state.projects.filter(p=>p.people.includes(state.currentPerson)); }
+function visibleProjects(){ return state.projects.filter(p=>p.people.includes(state.currentPerson) && !p.archived); }
+function archivedProjects(){ return state.projects.filter(p=>p.people.includes(state.currentPerson) && p.archived); }
 
 function calcBalances(project, entries){
   const people = project.people;
@@ -375,6 +380,62 @@ async function createProject(){
     render();
   }
 }
+
+/* ---------------- project management (rename / archive / delete) ---------------- */
+function openProjectMenu(id){
+  state.projectMenuId = id;
+  state.projectMenuMode = 'menu';
+  render();
+}
+function closeProjectMenu(){
+  state.projectMenuId = null;
+  state.projectMenuMode = null;
+  state.renameValue = '';
+  state.errors = {};
+  render();
+}
+function startRename(){
+  const p = state.projects.find(x=>x.id===state.projectMenuId);
+  state.renameValue = p ? p.name : '';
+  state.projectMenuMode = 'rename';
+  state.errors = {};
+  render();
+}
+async function submitRename(){
+  const p = state.projects.find(x=>x.id===state.projectMenuId);
+  if(!p) return;
+  const name = (state.renameValue||'').trim();
+  if(!name){ state.errors = { rename: 'Give this project a name.' }; render(); return; }
+  try{
+    await updateDoc(doc(db,'projects',p.id), {name});
+    closeProjectMenu();
+  }catch(err){
+    state.errors = { rename: 'Could not save. Check your connection and try again.' };
+    render();
+  }
+}
+async function toggleArchive(id, archived){
+  try{ await updateDoc(doc(db,'projects',id), {archived}); }
+  catch(err){ console.error(err); }
+  closeProjectMenu();
+}
+function askDeleteProject(){
+  state.projectMenuMode = 'deleteConfirm';
+  render();
+}
+async function confirmDeleteProject(){
+  const id = state.projectMenuId;
+  if(!id) return;
+  try{
+    const snap = await getDocs(collection(db,'projects',id,'entries'));
+    await Promise.all(snap.docs.map(d=>deleteDoc(d.ref)));
+    await deleteDoc(doc(db,'projects',id));
+  }catch(err){
+    console.error(err);
+  }
+  closeProjectMenu();
+}
+function toggleShowArchived(){ state.showArchived = !state.showArchived; render(); }
 function blankSpendForm(){
   const project = currentProject();
   return {
@@ -662,6 +723,23 @@ function renderPersonPicker(){
 
 function renderProjectList(){
   const projects = visibleProjects();
+  const archived = archivedProjects();
+  function card(p){
+    return `
+        <div class="card tappable" onclick="openProject('${p.id}')">
+          <div class="row-between">
+            <div>
+              <h3 style="font-size:17px;">${esc(p.name)}</h3>
+              <div class="hint" style="margin:4px 0 0;">${p.people.join(' & ')} · ${p.categories.length} categories${p.archived?' · archived':''}</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:14px;">
+              <span class="link-btn" onclick="event.stopPropagation(); openProjectMenu('${p.id}')" style="font-size:18px; line-height:1;">⋯</span>
+              <span class="link-btn">Open →</span>
+            </div>
+          </div>
+        </div>
+    `;
+  }
   return `
     <div class="topbar">
       <div class="brand"><h1>Ledger</h1></div>
@@ -673,21 +751,73 @@ function renderProjectList(){
     <div class="content">
       <div class="screen-title">Projects</div>
       <div class="screen-sub">${projects.length ? 'Pick one to open, or start a new one.' : "You don't have any projects yet."}</div>
-      ${projects.map(p=>`
-        <div class="card tappable" onclick="openProject('${p.id}')">
-          <div class="row-between">
-            <div>
-              <h3 style="font-size:17px;">${esc(p.name)}</h3>
-              <div class="hint" style="margin:4px 0 0;">${p.people.join(' & ')} · ${p.categories.length} categories</div>
-            </div>
-            <span class="link-btn">Open →</span>
-          </div>
-        </div>
-      `).join('')}
+      ${projects.map(card).join('')}
       ${projects.length===0 ? `<div class="empty"><h3>Nothing here yet</h3><p>Start a project to begin logging spend.</p></div>` : ''}
       <button class="btn btn-primary btn-block" onclick="goNewProject()" style="margin-top:8px;">+ New project</button>
+
+      ${archived.length>0 ? `
+        <div style="text-align:center; margin-top:18px;">
+          <span class="link-btn" onclick="toggleShowArchived()">${state.showArchived?'Hide':'Show'} archived (${archived.length})</span>
+        </div>
+        ${state.showArchived ? `<div style="margin-top:12px;">${archived.map(card).join('')}</div>` : ''}
+      ` : ''}
     </div>
+    ${renderProjectMenu()}
   `;
+}
+
+function renderProjectMenu(){
+  if(!state.projectMenuId) return '';
+  const p = state.projects.find(x=>x.id===state.projectMenuId);
+  if(!p) return '';
+  const mode = state.projectMenuMode;
+
+  if(mode==='rename'){
+    return `
+    <div class="modal-backdrop" onclick="if(event.target===this) closeProjectMenu()">
+      <div class="modal">
+        <div class="modal-handle"></div>
+        <h3 style="margin-bottom:14px;">Rename project</h3>
+        <label>Project name</label>
+        <input type="text" id="rename-input" value="${esc(state.renameValue)}">
+        ${state.errors.rename?`<div class="error-box">${state.errors.rename}</div>`:''}
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button class="btn btn-secondary" style="flex:1;" onclick="closeProjectMenu()">Cancel</button>
+          <button class="btn btn-primary" style="flex:1;" onclick="submitRename()">Save</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  if(mode==='deleteConfirm'){
+    return `
+    <div class="modal-backdrop" onclick="if(event.target===this) closeProjectMenu()">
+      <div class="modal">
+        <div class="modal-handle"></div>
+        <h3 style="margin-bottom:10px;">Delete "${esc(p.name)}"?</h3>
+        <p class="hint" style="margin-bottom:16px;">This permanently deletes the project and every entry in it, for both of you. This can't be undone.</p>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-secondary" style="flex:1;" onclick="closeProjectMenu()">Cancel</button>
+          <button class="btn btn-danger" style="flex:1;" onclick="confirmDeleteProject()">Delete permanently</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  return `
+  <div class="modal-backdrop" onclick="if(event.target===this) closeProjectMenu()">
+    <div class="modal">
+      <div class="modal-handle"></div>
+      <h3 style="margin-bottom:14px;">${esc(p.name)}</h3>
+      <button class="btn btn-secondary btn-block" style="margin-bottom:10px;" onclick="startRename()">Rename project</button>
+      ${p.archived
+        ? `<button class="btn btn-secondary btn-block" style="margin-bottom:10px;" onclick="toggleArchive('${p.id}', false)">Unarchive</button>`
+        : `<button class="btn btn-secondary btn-block" style="margin-bottom:10px;" onclick="toggleArchive('${p.id}', true)">Archive (hide from list)</button>`
+      }
+      <button class="btn btn-danger btn-block" style="margin-bottom:10px;" onclick="askDeleteProject()">Delete permanently</button>
+      <button class="btn btn-ghost btn-block" onclick="closeProjectMenu()">Cancel</button>
+    </div>
+  </div>`;
 }
 
 function renderNewProject(){
@@ -1011,6 +1141,9 @@ function attachDynamicHandlers(){
   const presetSel = document.getElementById('np-preset');
   if(presetSel) presetSel.onchange = (e)=>{ state.form.preset = e.target.value; };
 
+  const renameInput = document.getElementById('rename-input');
+  if(renameInput) renameInput.oninput = (e)=>{ state.renameValue = e.target.value; };
+
   const dateInput = document.getElementById('f-date');
   if(dateInput) dateInput.onchange = (e)=>{ state.form.date = e.target.value; if(state.form.currency!=='GBP'){ state.form.rate=''; fetchRate(); } };
   const currencySel = document.getElementById('f-currency');
@@ -1063,6 +1196,14 @@ window.setCurrency = setCurrency;
 window.fetchRate = fetchRate;
 window.openDrilldown = openDrilldown;
 window.closeDrilldown = closeDrilldown;
+window.openProjectMenu = openProjectMenu;
+window.closeProjectMenu = closeProjectMenu;
+window.startRename = startRename;
+window.submitRename = submitRename;
+window.toggleArchive = toggleArchive;
+window.askDeleteProject = askDeleteProject;
+window.confirmDeleteProject = confirmDeleteProject;
+window.toggleShowArchived = toggleShowArchived;
 
 render();
 </script>
