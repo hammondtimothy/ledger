@@ -260,6 +260,8 @@ let state = {
   projectMenuId: null,
   projectMenuMode: null, // 'menu' | 'rename' | 'deleteConfirm'
   renameValue: '',
+  editingCategory: null,
+  editCategoryValue: '',
 };
 if(state.currentPerson) state.screen = 'projectList';
 
@@ -625,6 +627,48 @@ async function removeCategory(name){
   try{ await updateDoc(doc(db,'projects',project.id), {categories: updated}); }
   catch(err){ console.error(err); }
 }
+async function moveCategory(index, dir){
+  const project = currentProject();
+  const cats = project.categories.slice();
+  const j = index + dir;
+  if(j<0 || j>=cats.length) return;
+  [cats[index], cats[j]] = [cats[j], cats[index]];
+  try{ await updateDoc(doc(db,'projects',project.id), {categories: cats}); }
+  catch(err){ console.error(err); }
+}
+function startEditCategory(name){
+  state.editingCategory = name;
+  state.editCategoryValue = name;
+  state.errors = {};
+  render();
+}
+function cancelEditCategory(){
+  state.editingCategory = null;
+  state.editCategoryValue = '';
+  state.errors = {};
+  render();
+}
+async function submitEditCategory(){
+  const project = currentProject();
+  const oldName = state.editingCategory;
+  const newName = (state.editCategoryValue||'').trim();
+  if(!newName){ state.errors = {editCategory:'Give this category a name.'}; render(); return; }
+  if(newName!==oldName && project.categories.includes(newName)){ state.errors = {editCategory:'That category already exists.'}; render(); return; }
+  if(newName===oldName){ cancelEditCategory(); return; }
+  try{
+    const updatedCats = project.categories.map(c=>c===oldName?newName:c);
+    await updateDoc(doc(db,'projects',project.id), {categories: updatedCats});
+    const affected = state.entries.filter(e=>e.type==='spend' && e.categories.some(c=>c.name===oldName));
+    await Promise.all(affected.map(e=>{
+      const newCats = e.categories.map(c=>c.name===oldName?{...c,name:newName}:c);
+      return updateDoc(doc(db,'projects',project.id,'entries',e.id), {categories:newCats});
+    }));
+    cancelEditCategory();
+  }catch(err){
+    state.errors = {editCategory:'Could not save. Check your connection and try again.'};
+    render();
+  }
+}
 
 function csvCell(s){
   const str = String(s??'');
@@ -904,7 +948,7 @@ function renderDeleteConfirm(){
 function renderEntryTab(project){
   const f = state.form;
   const isSpend = f.type==='spend';
-  const recent = state.entries.slice(0,8);
+  const all = state.entries.slice().sort((a,b)=> b.date.localeCompare(a.date) || (b.createdAtMs-a.createdAtMs));
   return `
     ${state.errors.general?`<div class="error-box">${state.errors.general}</div>`:''}
     <div class="toggle-group">
@@ -914,8 +958,8 @@ function renderEntryTab(project){
     <div class="card">
       ${isSpend ? renderSpendForm(project, f) : renderTransferForm(project, f)}
     </div>
-    <h3 style="font-size:15px; margin: 18px 0 8px;">Recent entries</h3>
-    ${recent.length===0 ? `<div class="empty" style="padding:20px;"><p>No entries yet. Log your first spend above.</p></div>` : recent.map(e=>renderEntryRow(e)).join('')}
+    <h3 style="font-size:15px; margin: 18px 0 8px;">All entries (${all.length})</h3>
+    ${all.length===0 ? `<div class="empty" style="padding:20px;"><p>No entries yet. Log your first spend above.</p></div>` : all.map(e=>renderEntryRow(e)).join('')}
   `;
 }
 
@@ -1091,14 +1135,35 @@ function renderSummaryTab(project){
 function renderCategoriesTab(project){
   return `
     <div class="screen-title" style="font-size:20px;">Categories</div>
-    <div class="screen-sub">Add, or remove ones you don't use for this project.</div>
+    <div class="screen-sub">Rename, reorder, add, or remove categories for this project. The order here is the order they appear when logging spend.</div>
     <div class="card">
-      ${project.categories.map(c=>`
+      ${project.categories.map((c,i)=>{
+        const isEditing = state.editingCategory===c;
+        if(isEditing){
+          return `
+          <div style="padding:8px 0; border-bottom:1px solid var(--paper-line);">
+            <div class="field-row" style="margin-bottom:0;">
+              <input type="text" id="edit-cat-input" value="${esc(state.editCategoryValue)}" style="margin-bottom:6px;">
+            </div>
+            ${state.errors.editCategory?`<div class="error-box">${state.errors.editCategory}</div>`:''}
+            <div style="display:flex; gap:10px;">
+              <button class="btn btn-secondary" style="flex:1; padding:8px;" onclick="cancelEditCategory()">Cancel</button>
+              <button class="btn btn-primary" style="flex:1; padding:8px;" onclick="submitEditCategory()">Save</button>
+            </div>
+          </div>`;
+        }
+        return `
         <div class="row-between" style="padding:8px 0; border-bottom:1px solid var(--paper-line);">
           <span>${esc(c)}</span>
-          <span class="link-btn" style="color:var(--owe);" onclick="removeCategory('${esc(c).replace(/'/g,"\\'")}')">Remove</span>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <span class="link-btn" style="${i===0?'opacity:0.3; pointer-events:none;':''}" onclick="moveCategory(${i},-1)">▲</span>
+            <span class="link-btn" style="${i===project.categories.length-1?'opacity:0.3; pointer-events:none;':''}" onclick="moveCategory(${i},1)">▼</span>
+            <span class="link-btn" onclick="startEditCategory('${esc(c).replace(/'/g,"\\'")}')">Edit</span>
+            <span class="link-btn" style="color:var(--owe);" onclick="removeCategory('${esc(c).replace(/'/g,"\\'")}')">Remove</span>
+          </div>
         </div>
-      `).join('')}
+        `;
+      }).join('')}
     </div>
     <label>Add a category</label>
     <div class="field-row">
@@ -1143,6 +1208,9 @@ function attachDynamicHandlers(){
 
   const renameInput = document.getElementById('rename-input');
   if(renameInput) renameInput.oninput = (e)=>{ state.renameValue = e.target.value; };
+
+  const editCatInput = document.getElementById('edit-cat-input');
+  if(editCatInput) editCatInput.oninput = (e)=>{ state.editCategoryValue = e.target.value; };
 
   const dateInput = document.getElementById('f-date');
   if(dateInput) dateInput.onchange = (e)=>{ state.form.date = e.target.value; if(state.form.currency!=='GBP'){ state.form.rate=''; fetchRate(); } };
@@ -1204,6 +1272,10 @@ window.toggleArchive = toggleArchive;
 window.askDeleteProject = askDeleteProject;
 window.confirmDeleteProject = confirmDeleteProject;
 window.toggleShowArchived = toggleShowArchived;
+window.moveCategory = moveCategory;
+window.startEditCategory = startEditCategory;
+window.cancelEditCategory = cancelEditCategory;
+window.submitEditCategory = submitEditCategory;
 
 render();
 </script>
