@@ -458,7 +458,7 @@ function blankSpendForm(){
 function setTab(t){ state.tab=t; state.drilldownCategory=null; state.form = blankSpendForm(); state.editingEntryId=null; state.errors={}; render(); }
 function setFormType(type){ state.form.type = type; state.errors={}; render(); }
 
-const CURRENCY_SYMBOLS = { GBP:'£', USD:'$', EUR:'€' };
+const CURRENCY_SYMBOLS = { GBP:'£', USD:'$', EUR:'€', CAD:'C$' };
 
 function effectiveAmount(f){
   if(f.currency==='GBP') return parseFloat(f.amount);
@@ -974,6 +974,7 @@ function renderSpendForm(project, f){
           <option value="GBP" ${f.currency==='GBP'?'selected':''}>£ GBP</option>
           <option value="USD" ${f.currency==='USD'?'selected':''}>$ USD</option>
           <option value="EUR" ${f.currency==='EUR'?'selected':''}>€ EUR</option>
+          <option value="CAD" ${f.currency==='CAD'?'selected':''}>C$ CAD</option>
         </select>
       </div>
     </div>
