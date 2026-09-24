@@ -57,7 +57,7 @@
   }
   .mono{ font-family:'IBM Plex Mono', monospace; }
   .topbar{
-    padding: 18px 20px 14px;
+    padding: calc(18px + env(safe-area-inset-top, 0px)) 20px 14px;
     border-bottom: 1px solid var(--paper-line);
     display:flex; align-items:center; justify-content:space-between;
     position: sticky; top:0; background: var(--paper); z-index: 20;
@@ -230,7 +230,7 @@ const db = getFirestore(fbApp);
 const auth = getAuth(fbApp);
 
 const PRESETS = {
-  Holiday: ['Hotel','Flights','Eating/drinking out','Shopping','Parking','Car hire','Petrol','Other'],
+  Holiday: ['Flights','Ferry','Package','Fuel','Tolls','Vehicle rental','Vehicle insurances','Parking','Buses/Taxis/Trains','Hotel','Campsites','Sustenance','Eating/drinking out','Outings','Shopping','Dog Care (kennels)','Bank fees','Other'],
   'DIY project': ['Materials','Tools','Labour','Delivery','Other'],
   'Car maintenance': ['Parts','Labour','MOT/Service','Insurance','Fuel','Other'],
   'Start blank': ['Other']
@@ -908,7 +908,7 @@ function renderProjectScreen(){
   return `
     <div class="topbar">
       <div class="brand">
-        <button class="link-btn" onclick="backToProjects()" style="margin-right:6px;">←</button>
+        <button class="link-btn" onclick="backToProjects()" style="margin-right:2px; padding:10px 12px 10px 4px; font-size:20px; line-height:1; min-height:44px;">←</button>
         <h1 style="font-size:19px;">${esc(project.name)}</h1>
       </div>
       <div class="person-pill" onclick="switchPerson()">
